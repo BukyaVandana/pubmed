@@ -1,0 +1,69 @@
+
+import requests
+import csv
+import xml.etree.ElementTree as ET
+from typing import List, Dict, Optional
+
+PUBMED_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_FETCH_API = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+
+def fetch_pubmed_ids(query: str) -> List[str]:
+    params = {
+        "db": "pubmed",
+        "term": query,
+        "retmode": "json",
+        "retmax": 10
+    }
+     response = requests.get(PUBMED_API, params=params)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("esearchresult", {}).get("idlist", [])
+
+def fetch_paper_details(pubmed_id: str) -> Optional[Dict]:
+    params = {
+        "db": "pubmed",
+        "id": pubmed_id,
+        "retmode": "xml"
+    }
+    response = requests.get(PUBMED_FETCH_API, params=params)
+    response.raise_for_status()
+    root = ET.fromstring(response.text)
+article = root.find(".//PubmedArticle")
+    if not article:
+        return None
+
+    paper = {
+        "PubMedID": pubmed_id,
+        "Title": article.findtext(".//ArticleTitle"),
+        "Publication Date": article.findtext(".//PubDate"),
+        "Authors": [],
+        "Company Affiliation(s)": [],
+        "Corresponding Author Email": None
+    }
+
+    authors = article.findall(".//Author")
+    for author in authors:
+        last_name = author.findtext("LastName", default="") 
+  first_name = author.findtext("ForeName", default="")
+        affiliation = author.findtext(".//Affiliation", default="")
+        email = author.findtext(".//AffiliationInfo/AffiliationEmail", default="")
+
+        full_name = f"{first_name} {last_name}".strip()
+        paper["Authors"].append(full_name)
+
+        if any(keyword in affiliation.lower() for keyword in ["pharma", "biotech", "inc", "ltd", "gmbh"]):
+            paper["Company Affiliation(s)"].append(affiliation)
+
+        if "@" in email:
+            paper["Corresponding Author Email"] = email
+
+    return paper
+def filter_papers(papers: List[Dict]) -> List[Dict]:
+    return [paper for paper in papers if paper["Company Affiliation(s)"]]
+
+def save_to_csv(papers: List[Dict], filename: str):
+    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=papers[0].keys())
+        writer.writeheader()
+        writer.writerows(papers)
+ 
